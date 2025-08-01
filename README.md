@@ -1,220 +1,125 @@
-# zkLogin on Sui: A Beginner’s Guide
+# zkLogin on Sui: Beginner-Friendly Summary
 
-## 1. Overview
+## 1. What is zkLogin?
 
-zkLogin allows users to authenticate with a familiar Web2 identity (like Google) and act on the Sui blockchain **without exposing that identity publicly**. It combines:
+zkLogin lets someone log in with a Web2 identity (like Google) and act on Sui **without exposing their identity on-chain**. It combines:
 - A Web2 login (OAuth/OpenID),
 - A secret (salt),
-- A short-lived session binding (ephemeral key + nonce),
-- And a zero-knowledge proof that ties everything together securely and privately.
+- A short-lived session (ephemeral key + nonce),
+- A zero-knowledge proof that ties it all together.
 
-Note: Visit https://sui-zklogin.vercel.app/ for testing.
+> **Test it:** https://sui-zklogin.vercel.app/
+
 ---
 
-## 2. Core Components (What They Are, Why They Exist, Failure Modes, Lifetimes)
+## 2. Key Pieces (Simple)
 
 ### OAuth JWT (ID Token)
-- Definition / Role: Token from an identity provider (e.g., Google) asserting the user logged in; contains iss, aud, sub, nonce, expiration, etc.
-- Why it’s needed: Proves the user’s Web2 identity and that they recently authenticated.
-- Failure / Risk if missing or invalid: No proof of identity; expired, forged, or mismatched token causes authentication to fail.
-- Lifetime: Short-lived.
+- **Role:** Proof that the user logged in with Google (or other OpenID).  
+- **Why:** Establishes “who” the user is.  
+- **Lifetime:** Short (expires soon).  
+- **If missing/invalid:** Cannot authenticate.
 
 ### Salt
-- Definition / Role: Secret random value combined with identity fields (iss, aud, sub) to derive the on-chain zkLogin address.
-- Why it’s needed: Breaks direct one-to-one mapping between Web2 identity and on-chain address (privacy) and provides a second secret factor.
-- Failure / Risk: Changing it yields a different address (loses continuity); leaking it together with OAuth control enables impersonation; losing it makes the original address unrecoverable.
-- Lifetime: Persistent (if reused consistently).
+- **Role:** Secret value combined with the login identity to create the Sui address.  
+- **Why:** Prevents linking your Web2 account directly to the on-chain address and adds a secret factor.  
+- **Lifetime:** Persistent if reused.  
+- **If lost:** You lose the original address.  
+- **If leaked with login:** Account can be impersonated.
 
 ### zkLogin Address
-- Definition / Role: The derived Sui account address computed deterministically from (issuer, audience, sub, salt).
-- Why it’s needed: The stable on-chain identity the user controls via zkLogin.
-- Failure / Risk: Any divergence in inputs (e.g., different salt) produces a different address; derivation is one-way.
-- Lifetime: Deterministic given identical inputs.
+- **Role:** The on-chain Sui account derived from identity + salt.  
+- **Why:** Where you send/receive assets.  
+- **Stable** if same salt + identity are reused.
 
 ### Ephemeral Key Pair
-- Definition / Role: A short-lived key pair generated per session, used to sign the transaction.
-- Why it’s needed: Binds the transaction submission to the specific authenticated session and limits blast radius if compromised.
-- Failure / Risk: Without it, you cannot prove the session’s action; if instead long-lived, compromise yields persistent control.
-- Lifetime: Short-lived / session-scoped.
+- **Role:** Temporary key for this session, used to sign transactions.  
+- **Why:** Binds the action to the login without long-term keys.  
+- **Lifetime:** Short.  
+- **If reused improperly:** Weakens security.
 
 ### Nonce
-- Definition / Role: A hash that binds the ephemeral public key, expiry (maxEpoch), and randomness into the OAuth login request.
-- Why it’s needed: Ensures the returned JWT is session-specific and tied to the ephemeral key, preventing replay.
-- Failure / Risk: Broken session linkage or replay attacks if missing/malformed; proof cannot validate.
-- Lifetime: Session-scoped (short-lived).
+- **Role:** Binds the ephemeral key, session expiry, and randomness into the login.  
+- **Why:** Ensures the JWT is tied to this specific session.  
+- **Prevents:** Replay of old tokens.
 
 ### Extended Ephemeral Public Key
-- Definition / Role: The ephemeral public key transformed into the numeric format the zero-knowledge circuit consumes.
-- Why it’s needed: Allows the proving system to incorporate the ephemeral key into the zk proof.
-- Failure / Risk: If not extended correctly, the proof cannot bind the session key and will fail.
-- Lifetime: Session-scoped.
+- **Role:** Transforms the ephemeral public key into the format the proof system needs.  
+- **Why:** So the zero-knowledge proof can include the session key.
 
 ### Zero-Knowledge Proof (PartialZkLoginSignature)
-- Definition / Role: Cryptographic proof plus public inputs that attest the JWT, salt, nonce, and ephemeral key are properly linked without revealing sensitive data.
-- Why it’s needed: Lets the blockchain trust the composite login/session identity while preserving privacy.
-- Failure / Risk: If invalid or absent, validators reject the transaction; forged or inconsistent proofs fail verification.
-- Lifetime: Short-lived (tied to current login/session).
+- **Role:** Cryptographically proves everything (login, salt, ephemeral key) is linked correctly without revealing secrets.  
+- **Why:** Lets Sui trust the login and authorization.
 
 ### Final zkLogin Signature
-- Definition / Role: The assembled signature combining the proof, address seed, ephemeral signature, and metadata (e.g., maxEpoch).
-- Why it’s needed: This is what is submitted to Sui to authenticate and authorize the transaction.
-- Failure / Risk: Any inconsistency (wrong seed, stale proof, invalid ephemeral signature) causes rejection.
-- Lifetime: Per transaction / per session usage.
+- **Role:** Combines the proof, ephemeral signature, and address seed to authorize a transaction.  
+- **Submitted to:** Sui for execution.
 
 ---
 
-## 3. Step-by-Step Flow
+## 3. Simplified Flow
 
-### Step 1: Generate Ephemeral Key Pair
-- Create a short-lived key pair for this login session.
-- Choose a validity window (maxEpoch, e.g., current epoch + 10) and generate fresh randomness.
-- These will be ingredients for the nonce that binds the session.
+1. **Generate session:**  
+   - Create an ephemeral key pair.  
+   - Pick a validity (`maxEpoch`) and randomness.  
+   - Compute a `nonce` = hash(ephemeral public key, maxEpoch, randomness).
 
-### Step 2: Fetch JWT from OpenID Provider
-Construct the OpenID/OAuth login request with:
-1. $CLIENT_ID – your registered client ID.
-2. $REDIRECT_URL – configured redirect callback in the provider.
-3. $NONCE – generated from the ephemeral public key, maxEpoch, and randomness.
+2. **Login via OpenID:**  
+   - Redirect user to provider (e.g., Google) including the nonce.  
+   - Receive a JWT (`id_token`) that includes that nonce and identity (`iss`, `aud`, `sub`).
 
-Example nonce generation:
-import { generateNonce } from "@mysten/zklogin";
+3. **Get or reuse salt:**  
+   - Secret value stored by user, client, or backend.  
+   - Needed to derive a consistent zkLogin address.
 
-const nonce = generateNonce(
-  ephemeralKeyPair.getPublicKey(),
-  maxEpoch,
-  randomness
-);
-Perform the login (e.g., redirect to Google with response_type=id_token, scope=openid, and the nonce). On success, you receive an id_token (JWT) in the redirect.
+4. **Compute zkLogin address:**  
+   - Derive address from JWT identity + salt.
 
-### Step 3: Decode JWT
-Decode the ID token to extract claims:
-- iss (issuer),
-- aud (audience/client ID),
-- sub (user identifier),
-- nonce (ensures session binding),
-- iat, exp (timestamps),
-- jti (token ID), etc.
+5. **Get ZK proof:**  
+   - Extend ephemeral public key into proof format.  
+   - Send JWT, extended key, nonce parameters, salt, and `maxEpoch` to the prover service.  
+   - Receive the partial zkLogin signature (proof + public inputs).
 
-These values give you the stable identity tuple and confirm the login session.
+6. **Prepare transaction:**  
+   - Build the Sui transaction (set sender = zkLogin address).  
+   - Sign it with ephemeral key to get ephemeral signature.
 
-### Step 4: Generate / Obtain User Salt
-The salt is a secret that, together with iss, aud, and sub, deterministically defines the zkLogin Sui address.
+7. **Assemble full signature:**  
+   - Combine proof, address seed (from salt + identity), ephemeral signature, and `maxEpoch` into the final zkLogin signature.
 
-Example salt:
-164969034301553664818867886335076681282
-
-Storage options:
-- User-managed: Show once so the user backs it up.
-- Client-side: Persist securely (e.g., encrypted storage).
-- Backend: Store encrypted and release only after validating the JWT.
-
-### Step 5: Derive the zkLogin Sui Address
-Compute the on-chain address from the stable identity and salt:
-import { jwtToAddress } from "@mysten/zklogin";
-
-const zkLoginUserAddress = jwtToAddress(id_token, userSalt);
-This address remains consistent across sessions if iss/aud/sub and salt stay the same.
-
-### Step 6: Fetch Zero-Knowledge Proof (Groth16)
-#### a. Extended Ephemeral Public Key
-Prepare the session key for the proof:
-import { getExtendedEphemeralPublicKey } from "@mysten/zklogin";
-
-const extendedEphemeralPublicKey = getExtendedEphemeralPublicKey(
-  ephemeralKeyPair.getPublicKey()
-);
-
-#### b. Request Proof
-Send the necessary inputs to the proving service:
-const zkProofResult = await axios.post(
-  "https://prover-dev.mystenlabs.com/v1",
-  {
-    jwt: id_token,
-    extendedEphemeralPublicKey,
-    maxEpoch,
-    jwtRandomness: randomness,
-    salt: userSalt,
-    keyClaimName: "sub",
-  },
-  { headers: { "Content-Type": "application/json" } }
-).then(res => res.data);
-
-const partialZkLoginSignature = zkProofResult;
-
-This returns the PartialZkLoginSignature containing the proof and public inputs tying together login, salt, and ephemeral key.
-
-### Step 7: Assemble zkLogin Signature and Submit Transaction
-- Build the transaction block (e.g., transfer 1 SUI) and set sender to zkLoginUserAddress.
-- Sign the transaction with the ephemeral key to get userSignature.
-- Derive the address seed from userSalt, "sub", decodedJwt.sub, and decodedJwt.aud.
-- Combine everything into the final zkLogin signature:
-const zkLoginSignature = getZkLoginSignature({
-  inputs: {
-    ...partialZkLoginSignature,
-    addressSeed,
-  },
-  maxEpoch,
-  userSignature,
-});
-- Execute the transaction:
-suiClient.executeTransactionBlock({
-  transactionBlock: bytes,
-  signature: zkLoginSignature,
-});
-Note: Ensure the zkLogin account has a small SUI balance to pay gas before invoking.
+8. **Submit to Sui:**  
+   - Execute the transaction with the composite signature.  
+   - Ensure the zkLogin address has enough SUI for gas.
 
 ---
 
-## 4. Security Properties
+## 4. Security Highlights
 
-- Two-factor-like control: Both the OAuth proof and the secret salt are required to control the address.
-- Session binding: Ephemeral key + nonce prevent replay attacks and tie actions to a specific login session.
-- Privacy: Identity details (sub, etc.) aren’t exposed on-chain; only their validity is proven via the zk proof.
-- Consistent address: Reusing the same salt and identity yields the same address; changing the salt produces a new, unlinkable address.
-- Limited exposure: Ephemeral session artifacts expire (by epoch), bounding risk if compromised.
-
----
-
-## 5. Salt Storage Guidance
-
-Backend (recommended for UX):
-- Encrypt the salt at rest (e.g., envelope encryption with a KMS).
-- Only retrieve/use it after validating a fresh OAuth JWT.
-- Monitor access patterns, rate-limit, and alert on anomalies.
-
-Client-side:
-- Store in secure local storage (e.g., encrypted IndexedDB or mobile secure store).
-- Provide clear instructions for backup; losing the salt loses recoverability of the address.
-
-User-managed:
-- Display as a one-time recovery secret. If lost and no backup exists, the original address cannot be reconstructed.
+- **Two factors:** Web2 login (JWT) + salt. Both needed.  
+- **Session binding:** Ephemeral key + nonce stop reuse of old proofs.  
+- **Privacy:** Identity isn’t exposed on-chain; only its validity is proven.  
+- **Address stability:** Same salt + identity ⇒ same address.  
+- **Limited risk:** Ephemeral keys expire quickly.
 
 ---
 
-## 6. Improved Analogy: Secure Courier Pickup System
+## 5. Salt Storage Options
 
-Imagine a high-security courier locker where users retrieve sensitive packages. Access requires multiple pieces that collectively prove authorization, but the system never publicly exposes the user’s identity or full secret.
-
-- OAuth login (JWT): The verified digital pickup request—proves the user is allowed to collect a package.
-- Salt: The secret pickup code (like a PIN); combining it with the request determines the specific locker (the zkLogin address).
-- zkLogin Address: The locker number derived from request + secret.
-- Ephemeral Key Pair: A temporary access badge issued for that visit, proving the person using the locker is the one who initiated the pickup.
-- Nonce: The session ticket embedding badge details and expiry into the request—binding everything to a single visit.
-- Extended Ephemeral Public Key: The badge’s internals transformed for the internal verification engine.
-- Zero-Knowledge Proof: Sealed confirmation that the request, code, and badge align for that locker—without revealing the code itself.
-- Final zkLogin Signature: The combination of the confirmation, the live badge signature, and locker identity that opens the locker securely.
-
-If any piece is missing, mismatched, or expired, the locker stays locked. Observers only see valid access—they don’t see the secret code or internal identity.
+- **User-managed:** Show it once; user saves it. (If lost, address is gone.)  
+- **Client-side:** Keep encrypted in browser/mobile storage.  
+- **Backend:** Store encrypted and return only after verifying a fresh JWT.
 
 ---
 
-## 7. Summary
+## 6. Summary
 
-To control a zkLogin identity and successfully submit a transaction you need:
-- A persistent secret (salt) to define and stabilize the address.
-- A fresh login session (OAuth JWT + nonce + ephemeral key) to prove current authorization.
-- A zero-knowledge proof that binds identity, salt, and session without leaking private data.
-- A signed transaction using the ephemeral key.
-- A composite signature combining all pieces, submitted to Sui.
+To act as a zkLogin user you need:  
+- A **salt** (stable secret),  
+- A **fresh login session** (JWT + nonce + ephemeral key),  
+- A **zero-knowledge proof** tying it all together,  
+- A **signed transaction** with the ephemeral key,  
+- A **composite signature** submitted to Sui.
 
-Any inconsistency, expiration, or missing piece causes the transaction to be rejected.
+Missing or mismatched pieces cause failure.
+
+---
